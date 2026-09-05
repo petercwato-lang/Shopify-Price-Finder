@@ -1,4 +1,4 @@
-import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
+import { useFetcher, useLoaderData } from "react-router";
 import { useEffect, useState } from "react";
 
 import db from "../db.server";
@@ -26,14 +26,16 @@ export async function loader({ request }) {
   `);
 
   const result = await response.json();
-  const products = result?.data?.products?.nodes?.map((product) => {
-    const firstVariant = product.variants?.nodes?.[0];
-    return {
-      id: product.id,
-      title: product.title,
-      price: Number(firstVariant?.price || 0),
-    };
-  }) || [];
+
+  const products =
+    result?.data?.products?.nodes?.map((product) => {
+      const firstVariant = product.variants?.nodes?.[0];
+      return {
+        id: product.id,
+        title: product.title,
+        price: Number(firstVariant?.price || 0),
+      };
+    }) || [];
 
   const savedComparisons = await db.priceComparison.findMany({
     where: { shop: session.shop },
@@ -51,72 +53,24 @@ export async function loader({ request }) {
   return { products, comparisons };
 }
 
-export async function action({ request }) {
-  const { session } = await authenticate.admin(request);
-  const formData = await request.formData();
-
-  const productId = String(formData.get("productId") || "");
-  const productTitle = String(formData.get("productTitle") || "");
-  const shopifyPriceValue = String(formData.get("shopifyPrice") || "");
-  const competitorPriceValue = String(formData.get("competitorPrice") || "");
-  const competitorUrl = String(formData.get("competitorUrl") || "").trim();
-
-  const fail = (error) => ({ success: false, productId, error });
-
-  if (!productId) return fail("Missing product ID.");
-  if (!productTitle) return fail("Missing product title.");
-
-  const shopifyPrice = Number(shopifyPriceValue);
-  const competitorPrice = Number(competitorPriceValue);
-
-  if (!Number.isFinite(shopifyPrice) || shopifyPrice < 0) {
-    return fail("Shopify price is invalid.");
-  }
-
-  if (competitorPriceValue === "" || !Number.isFinite(competitorPrice) || competitorPrice < 0) {
-    return fail("Enter a valid competitor price.");
-  }
-
-  if (competitorUrl) {
-    try {
-      const parsedUrl = new URL(competitorUrl);
-      if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-        return fail("Competitor URL must start with http:// or https://.");
-      }
-    } catch {
-      return fail("Enter a valid competitor URL, for example https://competitor.com/product.");
-    }
-  }
-
-  await db.priceComparison.upsert({
-    where: { shop_productId: { shop: session.shop, productId } },
-    update: { productTitle, shopifyPrice, competitorPrice, competitorUrl },
-    create: {
-      shop: session.shop,
-      productId,
-      productTitle,
-      shopifyPrice,
-      competitorPrice,
-      competitorUrl,
-    },
-  });
-
-  return { success: true, productId, message: "Comparison saved." };
-}
-
 function formatMoney(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "$0.00";
+
   return new Intl.NumberFormat("en-AU", {
     style: "currency",
     currency: "AUD",
   }).format(number);
 }
 
-function ProductRow({ product, savedComparison, actionData }) {
-  const navigation = useNavigation();
-  const [competitorPrice, setCompetitorPrice] = useState(savedComparison?.competitorPrice ?? "");
-  const [competitorUrl, setCompetitorUrl] = useState(savedComparison?.competitorUrl ?? "");
+function ProductRow({ product, savedComparison }) {
+  const fetcher = useFetcher();
+  const [competitorPrice, setCompetitorPrice] = useState(
+    savedComparison?.competitorPrice ?? "",
+  );
+  const [competitorUrl, setCompetitorUrl] = useState(
+    savedComparison?.competitorUrl ?? "",
+  );
 
   useEffect(() => {
     setCompetitorPrice(savedComparison?.competitorPrice ?? "");
@@ -124,20 +78,26 @@ function ProductRow({ product, savedComparison, actionData }) {
   }, [savedComparison?.competitorPrice, savedComparison?.competitorUrl]);
 
   const competitorNumber = Number(competitorPrice);
-  const hasCompetitorPrice = competitorPrice !== "" && Number.isFinite(competitorNumber);
-  const difference = hasCompetitorPrice ? product.price - competitorNumber : null;
+  const hasCompetitorPrice =
+    competitorPrice !== "" && Number.isFinite(competitorNumber);
+  const difference = hasCompetitorPrice
+    ? product.price - competitorNumber
+    : null;
 
-  const submittingProductId = navigation.formData?.get("productId");
-  const isSaving = navigation.state === "submitting" && submittingProductId === product.id;
-  const saved = actionData?.success && actionData.productId === product.id;
-  const error = !actionData?.success && actionData?.productId === product.id ? actionData.error : null;
+  const isSaving = fetcher.state !== "idle";
+  const saved = fetcher.data?.success === true;
+  const error = fetcher.data?.success === false ? fetcher.data.error : null;
 
   return (
     <tr>
-      <td style={styles.cell}><strong>{product.title}</strong></td>
-      <td style={styles.cell}>{formatMoney(product.price)}</td>
       <td style={styles.cell}>
-        <Form method="post">
+        <strong>{product.title}</strong>
+      </td>
+
+      <td style={styles.cell}>{formatMoney(product.price)}</td>
+
+      <td style={styles.cell}>
+        <fetcher.Form method="post" action="/app/save-comparison">
           <input type="hidden" name="productId" value={product.id} />
           <input type="hidden" name="productTitle" value={product.title} />
           <input type="hidden" name="shopifyPrice" value={product.price} />
@@ -171,10 +131,17 @@ function ProductRow({ product, savedComparison, actionData }) {
 
           <button
             type="submit"
-            style={{ ...styles.saveButton, ...(isSaving ? styles.disabledButton : {}) }}
+            style={{
+              ...styles.saveButton,
+              ...(isSaving ? styles.disabledButton : {}),
+            }}
             disabled={isSaving}
           >
-            {isSaving ? "Saving..." : savedComparison ? "Update comparison" : "Save comparison"}
+            {isSaving
+              ? "Saving..."
+              : savedComparison
+                ? "Update comparison"
+                : "Save comparison"}
           </button>
 
           {saved && <div style={styles.savedMessage}>✓ Comparison saved</div>}
@@ -182,24 +149,40 @@ function ProductRow({ product, savedComparison, actionData }) {
           {savedComparison?.updatedAt && !saved && (
             <div style={styles.lastSaved}>Saved comparison</div>
           )}
-        </Form>
+        </fetcher.Form>
       </td>
 
       <td style={styles.cell}>
         {difference === null ? (
           <span style={styles.muted}>Enter competitor price</span>
         ) : difference > 0 ? (
-          <div style={styles.dearer}>+{formatMoney(difference)}<div style={styles.smallText}>Your Shopify price is dearer</div></div>
+          <div style={styles.dearer}>
+            +{formatMoney(difference)}
+            <div style={styles.smallText}>Your Shopify price is dearer</div>
+          </div>
         ) : difference < 0 ? (
-          <div style={styles.cheaper}>{formatMoney(difference)}<div style={styles.smallText}>Your Shopify price is cheaper</div></div>
+          <div style={styles.cheaper}>
+            {formatMoney(difference)}
+            <div style={styles.smallText}>Your Shopify price is cheaper</div>
+          </div>
         ) : (
-          <div style={styles.same}>{formatMoney(0)}<div style={styles.smallText}>Same price</div></div>
+          <div style={styles.same}>
+            {formatMoney(0)}
+            <div style={styles.smallText}>Same price</div>
+          </div>
         )}
       </td>
 
       <td style={styles.cell}>
         {competitorUrl ? (
-          <a href={competitorUrl} target="_blank" rel="noreferrer" style={styles.link}>Open competitor</a>
+          <a
+            href={competitorUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={styles.link}
+          >
+            Open competitor
+          </a>
         ) : (
           <span style={styles.muted}>No URL saved</span>
         )}
@@ -210,15 +193,19 @@ function ProductRow({ product, savedComparison, actionData }) {
 
 export default function Index() {
   const { products, comparisons } = useLoaderData();
-  const actionData = useActionData();
   const savedCount = Object.keys(comparisons || {}).length;
 
   return (
     <div style={styles.page}>
       <div style={styles.header}>
         <h1 style={styles.title}>Shopify Price Finder</h1>
-        <p style={styles.subtitle}>Compare your Shopify product prices with competitors and save the results.</p>
-        <div style={styles.summary}>{products.length} products loaded · {savedCount} comparisons saved</div>
+        <p style={styles.subtitle}>
+          Compare your Shopify product prices with competitors and save the
+          results.
+        </p>
+        <div style={styles.summary}>
+          {products.length} products loaded · {savedCount} comparisons saved
+        </div>
       </div>
 
       <div style={styles.card}>
@@ -242,7 +229,6 @@ export default function Index() {
                     key={product.id}
                     product={product}
                     savedComparison={comparisons?.[product.id] || null}
-                    actionData={actionData}
                   />
                 ))}
               </tbody>
@@ -255,25 +241,90 @@ export default function Index() {
 }
 
 const styles = {
-  page: { minHeight: "100vh", padding: "32px", background: "#f4f6f8", fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif' },
+  page: {
+    minHeight: "100vh",
+    padding: "32px",
+    background: "#f4f6f8",
+    fontFamily:
+      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif',
+  },
   header: { maxWidth: "1400px", margin: "0 auto 24px auto" },
   title: { margin: 0, fontSize: "32px", fontWeight: 700, color: "#202223" },
   subtitle: { margin: "8px 0 0", fontSize: "16px", color: "#6d7175" },
   summary: { marginTop: "12px", fontSize: "14px", fontWeight: 600, color: "#4a4a4a" },
-  card: { maxWidth: "1400px", margin: "0 auto", background: "#ffffff", borderRadius: "12px", overflow: "hidden", boxShadow: "0 1px 5px rgba(0, 0, 0, 0.12)" },
+  card: {
+    maxWidth: "1400px",
+    margin: "0 auto",
+    background: "#ffffff",
+    borderRadius: "12px",
+    overflow: "hidden",
+    boxShadow: "0 1px 5px rgba(0, 0, 0, 0.12)",
+  },
   tableWrapper: { overflowX: "auto" },
   table: { width: "100%", borderCollapse: "collapse" },
-  heading: { padding: "16px", textAlign: "left", background: "#f7f7f7", borderBottom: "1px solid #ddd", fontSize: "14px", color: "#303030" },
-  cell: { padding: "16px", verticalAlign: "top", borderBottom: "1px solid #e5e5e5", color: "#303030" },
+  heading: {
+    padding: "16px",
+    textAlign: "left",
+    background: "#f7f7f7",
+    borderBottom: "1px solid #ddd",
+    fontSize: "14px",
+    color: "#303030",
+  },
+  cell: {
+    padding: "16px",
+    verticalAlign: "top",
+    borderBottom: "1px solid #e5e5e5",
+    color: "#303030",
+  },
   fieldGroup: { marginBottom: "10px" },
-  label: { display: "block", marginBottom: "4px", fontSize: "12px", fontWeight: 600, color: "#616161" },
-  priceInput: { width: "140px", padding: "10px", border: "1px solid #c9cccf", borderRadius: "6px", fontSize: "14px" },
-  urlInput: { width: "280px", maxWidth: "100%", padding: "10px", border: "1px solid #c9cccf", borderRadius: "6px", fontSize: "14px", boxSizing: "border-box" },
-  saveButton: { marginTop: "2px", padding: "10px 20px", border: "none", borderRadius: "6px", background: "#008060", color: "#ffffff", fontWeight: 600, cursor: "pointer" },
+  label: {
+    display: "block",
+    marginBottom: "4px",
+    fontSize: "12px",
+    fontWeight: 600,
+    color: "#616161",
+  },
+  priceInput: {
+    width: "140px",
+    padding: "10px",
+    border: "1px solid #c9cccf",
+    borderRadius: "6px",
+    fontSize: "14px",
+  },
+  urlInput: {
+    width: "280px",
+    maxWidth: "100%",
+    padding: "10px",
+    border: "1px solid #c9cccf",
+    borderRadius: "6px",
+    fontSize: "14px",
+    boxSizing: "border-box",
+  },
+  saveButton: {
+    marginTop: "2px",
+    padding: "10px 20px",
+    border: "none",
+    borderRadius: "6px",
+    background: "#008060",
+    color: "#ffffff",
+    fontWeight: 600,
+    cursor: "pointer",
+  },
   disabledButton: { opacity: 0.6, cursor: "wait" },
-  savedMessage: { marginTop: "8px", color: "#008060", fontSize: "13px", fontWeight: 600 },
+  savedMessage: {
+    marginTop: "8px",
+    color: "#008060",
+    fontSize: "13px",
+    fontWeight: 600,
+  },
   lastSaved: { marginTop: "8px", color: "#6d7175", fontSize: "12px" },
-  rowError: { marginTop: "8px", maxWidth: "280px", color: "#b42318", fontSize: "12px", fontWeight: 600 },
+  rowError: {
+    marginTop: "8px",
+    maxWidth: "280px",
+    color: "#b42318",
+    fontSize: "12px",
+    fontWeight: 600,
+  },
   cheaper: { color: "#008060", fontWeight: 700 },
   dearer: { color: "#d72c0d", fontWeight: 700 },
   same: { color: "#5c5f62", fontWeight: 700 },
