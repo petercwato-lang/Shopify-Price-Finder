@@ -77,6 +77,13 @@ function ProductRow({ product, savedComparison }) {
     setCompetitorUrl(savedComparison?.competitorUrl ?? "");
   }, [savedComparison?.competitorPrice, savedComparison?.competitorUrl]);
 
+  useEffect(() => {
+    if (fetcher.data?.success && fetcher.data?.comparison) {
+      setCompetitorPrice(fetcher.data.comparison.competitorPrice ?? "");
+      setCompetitorUrl(fetcher.data.comparison.competitorUrl ?? "");
+    }
+  }, [fetcher.data]);
+
   const competitorNumber = Number(competitorPrice);
   const hasCompetitorPrice =
     competitorPrice !== "" && Number.isFinite(competitorNumber);
@@ -87,6 +94,7 @@ function ProductRow({ product, savedComparison }) {
   const isSaving = fetcher.state !== "idle";
   const saved = fetcher.data?.success === true;
   const error = fetcher.data?.success === false ? fetcher.data.error : null;
+  const hasSavedComparison = Boolean(savedComparison || saved);
 
   return (
     <tr>
@@ -120,13 +128,20 @@ function ProductRow({ product, savedComparison }) {
           <div style={styles.fieldGroup}>
             <label style={styles.label}>Competitor URL</label>
             <input
-              type="url"
+              type="text"
+              inputMode="url"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck="false"
               name="competitorUrl"
-              placeholder="https://competitor.com/product"
+              placeholder="competitor.com/product"
               value={competitorUrl}
               onChange={(event) => setCompetitorUrl(event.target.value)}
               style={styles.urlInput}
             />
+            <div style={styles.hint}>
+              You can paste the full link or just competitor.com/product.
+            </div>
           </div>
 
           <button
@@ -139,7 +154,7 @@ function ProductRow({ product, savedComparison }) {
           >
             {isSaving
               ? "Saving..."
-              : savedComparison
+              : hasSavedComparison
                 ? "Update comparison"
                 : "Save comparison"}
           </button>
@@ -299,6 +314,13 @@ const styles = {
     borderRadius: "6px",
     fontSize: "14px",
     boxSizing: "border-box",
+  },
+  hint: {
+    marginTop: "4px",
+    maxWidth: "280px",
+    color: "#6d7175",
+    fontSize: "11px",
+    lineHeight: 1.35,
   },
   saveButton: {
     marginTop: "2px",
