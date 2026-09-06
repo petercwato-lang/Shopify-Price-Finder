@@ -1,6 +1,24 @@
 import db from "../db.server";
 import { authenticate } from "../shopify.server";
 
+function normalizeCompetitorUrl(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+
+  const candidate = /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(trimmed)
+    ? trimmed
+    : `https://${trimmed}`;
+
+  try {
+    const parsedUrl = new URL(candidate);
+    if (!["http:", "https:"].includes(parsedUrl.protocol)) return null;
+    if (!parsedUrl.hostname || !parsedUrl.hostname.includes(".")) return null;
+    return parsedUrl.toString();
+  } catch {
+    return null;
+  }
+}
+
 export async function action({ request }) {
   const { session } = await authenticate.admin(request);
   const formData = await request.formData();
@@ -9,7 +27,7 @@ export async function action({ request }) {
   const productTitle = String(formData.get("productTitle") || "");
   const shopifyPriceValue = String(formData.get("shopifyPrice") || "");
   const competitorPriceValue = String(formData.get("competitorPrice") || "");
-  const competitorUrl = String(formData.get("competitorUrl") || "").trim();
+  const competitorUrlInput = String(formData.get("competitorUrl") || "");
 
   const fail = (error) => ({ success: false, productId, error });
 
@@ -31,20 +49,14 @@ export async function action({ request }) {
     return fail("Enter a valid competitor price.");
   }
 
-  if (competitorUrl) {
-    try {
-      const parsedUrl = new URL(competitorUrl);
-      if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-        return fail("Competitor URL must start with http:// or https://.");
-      }
-    } catch {
-      return fail(
-        "Enter a valid competitor URL, for example https://competitor.com/product.",
-      );
-    }
+  const competitorUrl = normalizeCompetitorUrl(competitorUrlInput);
+  if (competitorUrl === null) {
+    return fail(
+      "Enter a valid competitor link, for example competitor.com/product or https://competitor.com/product.",
+    );
   }
 
-  await db.priceComparison.upsert({
+  const comparison = await db.priceComparison.upsert({
     where: {
       shop_productId: {
         shop: session.shop,
@@ -71,5 +83,10 @@ export async function action({ request }) {
     success: true,
     productId,
     message: "Comparison saved.",
+    comparison: {
+      competitorPrice: comparison.competitorPrice,
+      competitorUrl: comparison.competitorUrl,
+      updatedAt: comparison.updatedAt,
+    },
   };
 }
